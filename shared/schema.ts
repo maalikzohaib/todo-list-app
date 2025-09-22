@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { pgTable, text, varchar } from "drizzle-orm/pg-core";
+import { pgTable, text, varchar, timestamp } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
@@ -13,6 +13,10 @@ export const tasks = pgTable("tasks", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   title: text("title").notNull(),
   status: text("status").notNull().default("pending"),
+  priority: text("priority").notNull().default("medium"),
+  dueDate: timestamp("due_date"),
+  createdAt: timestamp("created_at").notNull().default(sql`now()`),
+  updatedAt: timestamp("updated_at").notNull().default(sql`now()`),
 });
 
 export const insertUserSchema = createInsertSchema(users).pick({
@@ -23,6 +27,10 @@ export const insertUserSchema = createInsertSchema(users).pick({
 export const insertTaskSchema = createInsertSchema(tasks).pick({
   title: true,
   status: true,
+  priority: true,
+  dueDate: true,
+}).extend({
+  priority: z.enum(["low", "medium", "high"]).default("medium"),
 });
 
 export type InsertUser = z.infer<typeof insertUserSchema>;

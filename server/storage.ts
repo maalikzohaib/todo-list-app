@@ -1,10 +1,12 @@
-import { type User, type InsertUser, type Task, type InsertTask } from "@shared/schema";
-import { randomUUID } from "crypto";
-import fs from "fs/promises";
-import path from "path";
+import { type User, type InsertUser, type Task, type InsertTask, users, tasks } from "@shared/schema";
+import { neon } from "@neondatabase/serverless";
+import { drizzle } from "drizzle-orm/neon-http";
+import { eq, desc, asc, sql } from "drizzle-orm";
 
-// modify the interface with any CRUD methods
-// you might need
+// Initialize database connection
+const connectionString = process.env.DATABASE_URL!;
+const client = neon(connectionString);
+const db = drizzle(client);
 
 export interface IStorage {
   getUser(id: string): Promise<User | undefined>;
@@ -17,103 +19,58 @@ export interface IStorage {
   createTask(task: InsertTask): Promise<Task>;
   updateTask(id: string, updates: Partial<InsertTask>): Promise<Task | undefined>;
   deleteTask(id: string): Promise<boolean>;
-  loadTasksFromFile(): Promise<void>;
-  saveTasksToFile(): Promise<void>;
 }
 
-export class MemStorage implements IStorage {
-  private users: Map<string, User>;
-  private tasks: Map<string, Task>;
-  private tasksFilePath: string;
-
-  constructor() {
-    this.users = new Map();
-    this.tasks = new Map();
-    this.tasksFilePath = path.resolve(process.cwd(), "tasks.json");
-  }
-
+export class DatabaseStorage implements IStorage {
   async getUser(id: string): Promise<User | undefined> {
-    return this.users.get(id);
+    const result = await db.select().from(users).where(eq(users.id, id)).limit(1);
+    return result[0];
   }
 
   async getUserByUsername(username: string): Promise<User | undefined> {
-    return Array.from(this.users.values()).find(
-      (user) => user.username === username,
-    );
+    const result = await db.select().from(users).where(eq(users.username, username)).limit(1);
+    return result[0];
   }
 
   async createUser(insertUser: InsertUser): Promise<User> {
-    const id = randomUUID();
-    const user: User = { ...insertUser, id };
-    this.users.set(id, user);
-    return user;
+    const result = await db.insert(users).values(insertUser).returning();
+    return result[0];
   }
 
   async getAllTasks(): Promise<Task[]> {
-    return Array.from(this.tasks.values());
+    return await db.select().from(tasks).orderBy(desc(tasks.createdAt));
   }
 
   async getTask(id: string): Promise<Task | undefined> {
-    return this.tasks.get(id);
+    const result = await db.select().from(tasks).where(eq(tasks.id, id)).limit(1);
+    return result[0];
   }
 
   async createTask(insertTask: InsertTask): Promise<Task> {
-    const id = randomUUID();
-    const task: Task = { 
-      ...insertTask, 
-      id,
+    const result = await db.insert(tasks).values({
+      ...insertTask,
+      priority: insertTask.priority || "medium",
       status: insertTask.status || "pending"
-    };
-    this.tasks.set(id, task);
-    await this.saveTasksToFile();
-    return task;
+    }).returning();
+    return result[0];
   }
 
   async updateTask(id: string, updates: Partial<InsertTask>): Promise<Task | undefined> {
-    const existingTask = this.tasks.get(id);
-    if (!existingTask) {
-      return undefined;
-    }
+    const result = await db.update(tasks)
+      .set({
+        ...updates,
+        updatedAt: sql`now()`
+      })
+      .where(eq(tasks.id, id))
+      .returning();
     
-    const updatedTask: Task = { ...existingTask, ...updates };
-    this.tasks.set(id, updatedTask);
-    await this.saveTasksToFile();
-    return updatedTask;
+    return result[0];
   }
 
   async deleteTask(id: string): Promise<boolean> {
-    const deleted = this.tasks.delete(id);
-    if (deleted) {
-      await this.saveTasksToFile();
-    }
-    return deleted;
-  }
-
-  async loadTasksFromFile(): Promise<void> {
-    try {
-      const data = await fs.readFile(this.tasksFilePath, "utf-8");
-      const tasksArray: Task[] = JSON.parse(data);
-      this.tasks.clear();
-      tasksArray.forEach(task => {
-        this.tasks.set(task.id, task);
-      });
-    } catch (error) {
-      // File doesn't exist or is invalid, start with empty tasks
-      this.tasks.clear();
-    }
-  }
-
-  async saveTasksToFile(): Promise<void> {
-    try {
-      const tasksArray = Array.from(this.tasks.values());
-      await fs.writeFile(this.tasksFilePath, JSON.stringify(tasksArray, null, 2));
-    } catch (error) {
-      console.error("Failed to save tasks to file:", error);
-    }
+    const result = await db.delete(tasks).where(eq(tasks.id, id)).returning();
+    return result.length > 0;
   }
 }
 
-export const storage = new MemStorage();
-
-// Load tasks from file on startup
-storage.loadTasksFromFile().catch(console.error);
+export const storage = new DatabaseStorage();
