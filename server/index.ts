@@ -1,7 +1,11 @@
 import "dotenv/config";
-import express, { type Request, Response, NextFunction } from "express";
+import express, { type NextFunction, type Request, type Response } from "express";
+import type { IncomingMessage, ServerResponse } from "http";
+import type { Server } from "http";
 import { registerRoutes } from "./routes";
 import { setupVite, serveStatic, log } from "./vite";
+
+const isVercel = Boolean(process.env.VERCEL);
 
 const app = express();
 app.use(express.json());
@@ -27,7 +31,7 @@ app.use((req, res, next) => {
       }
 
       if (logLine.length > 80) {
-        logLine = logLine.slice(0, 79) + "…";
+        logLine = logLine.slice(0, 79) + "...";
       }
 
       log(logLine);
@@ -37,7 +41,9 @@ app.use((req, res, next) => {
   next();
 });
 
-(async () => {
+let serverPromise: Promise<Server> | null = null;
+
+async function createServerInstance(): Promise<Server> {
   const server = await registerRoutes(app);
 
   app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
@@ -45,27 +51,48 @@ app.use((req, res, next) => {
     const message = err.message || "Internal Server Error";
 
     res.status(status).json({ message });
-    throw err;
+
+    if (!isVercel) {
+      throw err;
+    } else {
+      console.error(err);
+    }
   });
 
-  // importantly only setup vite in development and after
-  // setting up all the other routes so the catch-all route
-  // doesn't interfere with the other routes
-  if (app.get("env") === "development") {
+  if (app.get("env") === "development" && !isVercel) {
     await setupVite(app, server);
   } else {
     serveStatic(app);
   }
 
-  // ALWAYS serve the app on the port specified in the environment variable PORT
-  // Other ports are firewalled. Default to 5000 if not specified.
-  // this serves both the API and the client.
-  // It is the only port that is not firewalled.
-  const port = parseInt(process.env.PORT || '5000', 10);
-  server.listen({
-    port,
-    host: "0.0.0.0",
-  }, () => {
-    log(`serving on port ${port}`);
-  });
-})();
+  return server;
+}
+
+function getServer(): Promise<Server> {
+  if (!serverPromise) {
+    serverPromise = createServerInstance();
+  }
+  return serverPromise;
+}
+
+if (!isVercel) {
+  getServer()
+    .then((server) => {
+      const port = parseInt(process.env.PORT || "5000", 10);
+      server.listen({
+        port,
+        host: "0.0.0.0",
+      }, () => {
+        log(`serving on port ${port}`);
+      });
+    })
+    .catch((error) => {
+      console.error("Failed to start server", error);
+      process.exit(1);
+    });
+}
+
+export default async function handler(req: IncomingMessage, res: ServerResponse) {
+  const server = await getServer();
+  server.emit("request", req, res);
+}
